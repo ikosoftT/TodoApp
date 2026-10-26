@@ -51,10 +51,17 @@
             const fetchTasks = async () => {
                 try {
                     const response = await fetch("/api/todos");
+                    if (!response.ok) {
+                        throw new Error(`Server returned ${response.status}`);
+                    }
                     todos = await response.json();
                     renderTasks();
                 } catch (err) {
-                    console.log(`I catched an err :${err}`);
+                    console.error(`Error while loading tasks: ${err}`);
+                    empty_state.classList.remove("hidden");
+                    empty_state.innerHTML = `
+                        <p class="text-red-300">Could not load tasks. Please try again.</p>
+                    `;
                 }
             }
             // Save data li jaya mn UI.

@@ -1,5 +1,8 @@
-.venv
+.venv/
 venv/
 __pycache__/
 *.pyc
-.env # in future of course 
+.env
+.env.*
+!.env.example
+.vercel/

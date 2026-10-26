@@ -1,63 +1,143 @@
 import os
-import json
-from flask import Flask, render_template, request, jsonify
+
+import psycopg
+from flask import Flask, jsonify, render_template, request
+from psycopg.rows import dict_row
+
 
 app = Flask(__name__)
-TODO_FILE = os.path.join(app.root_path, 'todos.json')
-
-# this def : Load tasks from json file
 
 
-def read_tasks() -> list[dict]:
-    if not os.path.exists(TODO_FILE):
-        return []
-    try:
-        with open(TODO_FILE) as f:
-            data_tasks = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        # ToFO : Be awair here
-        raise ValueError(
-            f"We cant Open {TODO_FILE} contains Invalid-JSON or Not Exits.")
-    return data_tasks
-
-# Write passed data to file.if fail > False else True
+def get_database_url() -> str:
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return database_url
 
 
-def write_tasks(tasks) -> bool:
-    try:
-        with open(TODO_FILE, 'w') as f:
-            json.dump(tasks, f, indent=4)
-            return True
-    except IOError:
-        return False
-    except Exception:
-        return False
-
-# Now Implemeting Request methods: GET
+def get_connection():
+    return psycopg.connect(
+        get_database_url(),
+        connect_timeout=10,
+        row_factory=dict_row,
+    )
 
 
-@app.route("/api/todos", methods=["GET"])
-def get_tasks():
-    tasks = read_tasks()
-    return jsonify(tasks)
+def ensure_schema(connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS todos (
+            id TEXT PRIMARY KEY,
+            text TEXT NOT NULL CHECK (char_length(text) BETWEEN 1 AND 500),
+            completed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at BIGINT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS todos_created_at_idx ON todos (created_at DESC)"
+    )
 
-# Save Tasks
 
+def validate_tasks(value):
+    if not isinstance(value, list) or len(value) > 1000:
+        return None
 
-@app.route("/api/todos", methods=["POST"])
-def save_task():
-    tasks = request.get_json(silent=True)
-    if not isinstance(tasks, list):
-        return jsonify({"status": "error", "message": "Expected a JSON list"}), 400
-    if not write_tasks(tasks):
-        return jsonify({"status": "error", "message": "Could not save tasks"}), 500
+    tasks = []
+    seen_ids = set()
+    for task in value:
+        if not isinstance(task, dict):
+            return None
 
-    return jsonify({"status": "success", "message": "task saved successfully"})
+        task_id = task.get("id")
+        text = task.get("text")
+        completed = task.get("completed")
+        created_at = task.get("createdAt")
+
+        if (
+            not isinstance(task_id, str)
+            or not task_id
+            or len(task_id) > 100
+            or task_id in seen_ids
+            or not isinstance(text, str)
+            or not text.strip()
+            or len(text.strip()) > 500
+            or not isinstance(completed, bool)
+            or not isinstance(created_at, int)
+            or isinstance(created_at, bool)
+        ):
+            return None
+
+        seen_ids.add(task_id)
+        tasks.append((task_id, text.strip(), completed, created_at))
+
+    return tasks
 
 
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/todos", methods=["GET"])
+def get_tasks():
+    try:
+        with get_connection() as connection:
+            ensure_schema(connection)
+            rows = connection.execute(
+                "SELECT id, text, completed, created_at FROM todos "
+                "ORDER BY created_at DESC"
+            ).fetchall()
+    except (psycopg.Error, RuntimeError):
+        app.logger.exception("Could not load todos")
+        return jsonify({"error": "Database is unavailable"}), 503
+
+    return jsonify(
+        [
+            {
+                "id": row["id"],
+                "text": row["text"],
+                "completed": row["completed"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
+    )
+
+
+@app.route("/api/todos", methods=["POST"])
+def save_tasks():
+    tasks = validate_tasks(request.get_json(silent=True))
+    if tasks is None:
+        return jsonify({"error": "Invalid todo list"}), 400
+
+    try:
+        with get_connection() as connection:
+            ensure_schema(connection)
+
+            if tasks:
+                connection.executemany(
+                    """
+                    INSERT INTO todos (id, text, completed, created_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        text = EXCLUDED.text,
+                        completed = EXCLUDED.completed,
+                        created_at = EXCLUDED.created_at
+                    """,
+                    tasks,
+                )
+                connection.execute(
+                    "DELETE FROM todos WHERE NOT (id = ANY(%s))",
+                    ([task[0] for task in tasks],),
+                )
+            else:
+                connection.execute("DELETE FROM todos")
+    except (psycopg.Error, RuntimeError):
+        app.logger.exception("Could not save todos")
+        return jsonify({"error": "Database is unavailable"}), 503
+
+    return jsonify({"status": "success"})
 
 
 if __name__ == "__main__":
