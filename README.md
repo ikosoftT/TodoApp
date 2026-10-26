@@ -25,5 +25,5 @@ table and index automatically on first use.
 3. Confirm that the integration provides `DATABASE_URL`.
 4. Redeploy the project.
 
-Vercel detects the Flask `app` exported from `app.py`; no custom build command
-or `vercel.json` file is required.
+Vercel uses `vercel.json` to select the Flask framework explicitly and detects
+the `app` exported from `app.py`. No custom build command is required.
