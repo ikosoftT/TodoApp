@@ -116,17 +116,18 @@ def save_tasks():
             ensure_schema(connection)
 
             if tasks:
-                connection.executemany(
-                    """
-                    INSERT INTO todos (id, text, completed, created_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE SET
-                        text = EXCLUDED.text,
-                        completed = EXCLUDED.completed,
-                        created_at = EXCLUDED.created_at
-                    """,
-                    tasks,
-                )
+                with connection.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO todos (id, text, completed, created_at)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE SET
+                            text = EXCLUDED.text,
+                            completed = EXCLUDED.completed,
+                            created_at = EXCLUDED.created_at
+                        """,
+                        tasks,
+                    )
                 connection.execute(
                     "DELETE FROM todos WHERE NOT (id = ANY(%s))",
                     ([task[0] for task in tasks],),
